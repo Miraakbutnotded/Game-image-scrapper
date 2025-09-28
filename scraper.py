@@ -12,6 +12,9 @@ import glob
 import cv2
 from tqdm import tqdm
 
+# Define all possible output directories to check for processed videos
+OUTPUT_DIRECTORIES = ['dataset', 'real_images']
+
 def extract_frames_from_video(video_path, target_fps, output_dir):
     """Extract frames from a video at specified FPS and save to output directory.
     
@@ -66,6 +69,76 @@ def extract_frames_from_video(video_path, target_fps, output_dir):
     cap.release()
     return extracted_frames
 
+
+def get_video_title_from_query(query, num_videos):
+    """Get video titles from YouTube search query without downloading.
+    
+    Args:
+        query (str): YouTube search query
+        num_videos (int): Number of videos to search for
+        
+    Returns:
+        list: List of video titles that would be downloaded
+    """
+    search_query = f"ytsearch{num_videos}:{query}"
+    
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': True,  # Don't download, just get metadata
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(search_query, download=False)
+            if 'entries' in info:
+                return [entry.get('title', 'Unknown') for entry in info['entries']]
+            return []
+    except Exception as e:
+        print(f"Error getting video titles: {e}")
+        return []
+
+def check_for_duplicate_videos(query, num_videos, download_dir):
+    """Check if videos from the query already exist in download directory.
+    
+    Args:
+        query (str): YouTube search query
+        num_videos (int): Number of videos to search for
+        download_dir (str): Directory to check for existing videos
+        
+    Returns:
+        tuple: (has_duplicates: bool, existing_videos: list, new_titles: list)
+    """
+    # Get titles of videos that would be downloaded
+    new_titles = get_video_title_from_query(query, num_videos)
+    if not new_titles:
+        return False, [], []
+    
+    # Get existing video files in download directory
+    existing_files = glob.glob(os.path.join(download_dir, "*.mp4")) + \
+                    glob.glob(os.path.join(download_dir, "*.webm")) + \
+                    glob.glob(os.path.join(download_dir, "*.mkv"))
+    
+    # Extract titles from existing files (remove extension)
+    existing_titles = [os.path.splitext(os.path.basename(f))[0] for f in existing_files]
+    
+    # Check for duplicates
+    duplicates = []
+    existing_videos = []
+    
+    for new_title in new_titles:
+        for existing_title in existing_titles:
+            # Check if titles match (case-insensitive)
+            if new_title.lower() == existing_title.lower():
+                duplicates.append(new_title)
+                # Find the corresponding file path
+                for existing_file in existing_files:
+                    if existing_title in existing_file:
+                        existing_videos.append(existing_file)
+                        break
+    
+    has_duplicates = len(duplicates) > 0
+    return has_duplicates, existing_videos, new_titles
 
 def download_youtube_videos(query, num_videos, download_dir):
     """Download youtube videos based on search query
@@ -122,13 +195,98 @@ def download_youtube_videos(query, num_videos, download_dir):
     except Exception as e:
         print(f"Error downloading videos: {e}")
         return []  # Return empty list if failed
+
+def download_youtube_url(url, download_dir):
+    """Download a specific YouTube video from URL
     
-def is_video_processed(video_path, output_dir):
+    Args:
+        url (str): Direct YouTube video URL
+        download_dir (str): Where to save the video
+        
+    Returns:
+        List: Path to downloaded video file
+    """
+    # Progress hook for download progress
+    def progress_hook(d):
+        if d['status'] == 'downloading':
+            if 'total_bytes' in d and d['total_bytes']:
+                percent = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                print(f"\rDownloading: {percent:.1f}% - {d.get('filename', '').split('/')[-1]}", end='', flush=True)
+        elif d['status'] == 'finished':
+            print(f"\n✓ Downloaded: {d.get('filename', '').split('/')[-1]}")
+
+    # Configure download options
+    ydl_opts = {
+        'format': 'best',
+        'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+        'quiet': True,
+        'progress_hooks': [progress_hook],
+    }
+
+    # Get files that exist BEFORE downloading
+    files_before = set(glob.glob(os.path.join(download_dir, "*")))
+
+    # Download the video
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # Get files that exist AFTER downloading
+        files_after = set(glob.glob(os.path.join(download_dir, "*")))
+        
+        # Find new files (difference between after and before)
+        downloaded_files = list(files_after - files_before)
+        
+        return downloaded_files
+    
+    except Exception as e:
+        print(f"Error downloading video from URL: {e}")
+        return []
+
+def check_url_duplicate(url, download_dir):
+    """Check if a video from the URL already exists in download directory.
+    
+    Args:
+        url (str): YouTube video URL
+        download_dir (str): Directory to check for existing videos
+        
+    Returns:
+        tuple: (is_duplicate: bool, existing_video_path: str or None)
+    """
+    # Get video title from URL without downloading
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,  # Get full metadata
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_title = info.get('title', 'Unknown')
+        
+        # Get existing video files
+        existing_files = glob.glob(os.path.join(download_dir, "*.mp4")) + \
+                        glob.glob(os.path.join(download_dir, "*.webm")) + \
+                        glob.glob(os.path.join(download_dir, "*.mkv"))
+        
+        # Check if any existing file matches the title
+        for existing_file in existing_files:
+            existing_title = os.path.splitext(os.path.basename(existing_file))[0]
+            if video_title.lower() == existing_title.lower():
+                return True, existing_file
+        
+        return False, None
+    
+    except Exception as e:
+        print(f"Error checking URL duplicate: {e}")
+        return False, None
+    
+def is_video_processed(video_path):
     """Check if frames have already been extracted for a given video.
     
     Args:
         video_path (str): Path to the video file
-        output_dir (str): Directory where frames are saved
 
     Returns:
         bool: True if frames already exist, False otherwise
@@ -143,25 +301,27 @@ def is_video_processed(video_path, output_dir):
     clean_name = clean_name.replace(' ', '_')
 
     # Look for frame files that start with this video name
-    pattern = os.path.join(output_dir, f"{clean_name}_frame_*.jpg")
-    existing_frames = glob.glob(pattern)
+    for directory in OUTPUT_DIRECTORIES:
+        output_dir = directory
+        pattern = os.path.join(output_dir, f"{clean_name}_frame_*.jpg")
+        existing_frames = glob.glob(pattern)
+        if len(existing_frames) > 0:
+            return True #Found frames in this directory, video is processed
+    
+    return False # No frames found in any directory, video is unprocessed
 
-    #If we find frames from this video, it is already processed
-    return len(existing_frames) > 0
-
-def get_unprocessed_videos(video_list, output_dir):
+def get_unprocessed_videos(video_list):
     """Filter a list of videos to only those that haven't been processed yet.
     
     Args:
         video_list (list): List of video file paths
-        output_dir (str): Directory where frames are saved
 
     Returns:
         list: Subset of video_list that are unprocessed
     """
     unprocessed = []
     for video in video_list:
-        if not is_video_processed(video, output_dir):
+        if not is_video_processed(video):
             unprocessed.append(video)
     return unprocessed
 
@@ -193,6 +353,9 @@ def main():
                          default=1.0,
                          help="Frames per second to extract from videos")
     
+    parser.add_argument("--youtube-url",
+                         help="Direct YouTube video URL to download")
+    
     # Gallery-specific arguments
     parser.add_argument("--url",
                          help="Gallery URL to scrape images from")
@@ -212,31 +375,82 @@ def main():
 
     # Handle YouTube mode
     if args.mode == "youtube":
-        if not args.query:
-            print("Error: --query is required for YouTube mode")
+        if not args.query and not args.youtube_url:
+            print("Error: Either --query or --youtube-url is required for YouTube mode")
             sys.exit(1)
         
-        print(f"YouTube mode - Query: {args.query}")
+        if args.query and args.youtube_url:
+            print("Error: Please use either --query OR --youtube-url, not both")
+            sys.exit(1)
+        
+        if args.query:
+            print(f"YouTube mode - Query: {args.query}")
+        else:
+            print(f"YouTube mode - URL: {args.youtube_url}")
         print(f"Target FPS: {args.fps}")
         
-        # Check for existing videos
-        existing_videos = glob.glob("downloads/*.mp4") + glob.glob("downloads/*.webm") + glob.glob("downloads/*.mkv")
-        
-        if existing_videos:
-            print(f"Found {len(existing_videos)} existing videos")
+        # Handle direct YouTube URL
+        if args.youtube_url:
+            print("Checking for duplicate video from URL...")
+            is_duplicate, existing_video = check_url_duplicate(args.youtube_url, "downloads")
             
-            # Check which videos haven't been processed yet
-            unprocessed_videos = get_unprocessed_videos(existing_videos, args.outdir)
-            
-            if unprocessed_videos:
-                print(f"Found {len(unprocessed_videos)} unprocessed videos, using those")
-                videos_to_process = unprocessed_videos
+            if is_duplicate:
+                print(f"⚠️ Video with same name found! Skipping download of duplicate video")
+                print(f"  - {os.path.basename(existing_video)}")
+                
+                # Check if duplicate video needs processing
+                if not is_video_processed(existing_video):
+                    print("Duplicate video needs frame extraction")
+                    videos_to_process = [existing_video]
+                else:
+                    print("Duplicate video has already been processed")
+                    videos_to_process = []
             else:
-                print("All existing videos have been processed, downloading new ones...")
-                videos_to_process = download_youtube_videos(args.query, args.num_videos, "downloads")
+                print("No duplicate found, downloading video from URL...")
+                videos_to_process = download_youtube_url(args.youtube_url, "downloads")
+        
+        # Handle search query
         else:
-            print("No existing videos found, downloading...")
-            videos_to_process = download_youtube_videos(args.query, args.num_videos, "downloads")
+            # Check for duplicate videos first
+            print("Checking for duplicate videos...")
+            has_duplicates, duplicate_videos, new_titles = check_for_duplicate_videos(args.query, args.num_videos, "downloads")
+            
+            if has_duplicates:
+                print(f"⚠️ Video with same name found! Skipping download of duplicate video(s):")
+                for i, title in enumerate(new_titles):
+                    print(f"  - {title}")
+                
+                # Check if duplicate videos need processing
+                unprocessed_duplicates = get_unprocessed_videos(duplicate_videos)
+                
+                if unprocessed_duplicates:
+                    print(f"Found {len(unprocessed_duplicates)} duplicate videos that need frame extraction")
+                    videos_to_process = unprocessed_duplicates
+                else:
+                    print("All duplicate videos have already been processed")
+                    videos_to_process = []
+            else:
+                # No duplicates found, check for other existing videos or download new ones
+                existing_videos = glob.glob("downloads/*.mp4") + glob.glob("downloads/*.webm") + glob.glob("downloads/*.mkv")
+                
+                if existing_videos:
+                    print(f"Found {len(existing_videos)} existing videos (different from query)")
+                    
+                    # Check which videos haven't been processed yet
+                    unprocessed_videos = get_unprocessed_videos(existing_videos)
+                    
+                    if unprocessed_videos:
+                        print(f"Found {len(unprocessed_videos)} unprocessed videos, processing those first...")
+                        print("Then downloading new video...")
+                        # Process existing unprocessed videos AND download new ones
+                        new_videos = download_youtube_videos(args.query, args.num_videos, "downloads")
+                        videos_to_process = unprocessed_videos + new_videos
+                    else:
+                        print("All existing videos have been processed, downloading new ones...")
+                        videos_to_process = download_youtube_videos(args.query, args.num_videos, "downloads")
+                else:
+                    print("No existing videos found, downloading...")
+                    videos_to_process = download_youtube_videos(args.query, args.num_videos, "downloads")
         
         # Extract frames from the videos we're processing
         if videos_to_process:

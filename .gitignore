@@ -28,8 +28,22 @@ ENV/
 .env/
 
 # Downloaded content (don't commit large files)
-downloads/
-dataset/
+# Ignore video files
+downloads/*.mp4
+downloads/*.webm
+downloads/*.mkv
+downloads/*.avi
+
+# Ignore extracted image files
+dataset/*.jpg
+dataset/*.png
+real_images/*.jpg
+real_images/*.png
+
+# Keep the folder structure but ignore contents
+!dataset/.gitkeep
+!downloads/.gitkeep
+!real_images/.gitkeep
 
 # IDE files
 .vscode/
