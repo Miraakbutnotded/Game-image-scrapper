@@ -1,3 +1,28 @@
+# Dataset files (keep repo lightweight)
+dataset/*.jpg
+dataset/*.jpeg
+dataset/*.png
+dataset/*.gif
+dataset/*.webp
+web_images/*.jpg
+web_images/*.jpeg
+web_images/*.png
+web_images/*.gif
+web_images/*.webp
+real_images/*.jpg
+real_images/*.jpeg
+real_images/*.png
+real_images/*.gif
+real_images/*.webp
+downloads/*.mp4
+downloads/*.webm
+downloads/*.mkv
+downloads/*.avi
+
+# Metadata files (optional - you can remove these lines to track metadata)
+metadata.json
+*.log
+
 # Python
 __pycache__/
 *.py[cod]

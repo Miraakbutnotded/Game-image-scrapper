@@ -6,7 +6,8 @@
 - [x] Project setup with virtual environment
 - [x] Requirements.txt with all dependencies
 - [x] Command-line argument parsing (argparse)
-- [x] Basic project structure and README
+- [x] Basic project structure and comprehensive README
+- [x] Smart directory organization (video frames vs web images)
 
 ### YouTube Video Processing
 - [x] YouTube video downloading with yt-dlp
@@ -18,6 +19,17 @@
 - [x] Frame extraction progress bars (tqdm)
 - [x] Video name inclusion in frame filenames
 - [x] Already-processed video detection
+- [x] **Successfully extracted 954 Silent Hill game frames**
+
+### Advanced Web Scraping (NEWLY COMPLETED)
+- [x] **Enhanced Google Images scraping with JavaScript parsing**
+- [x] **Multi-pattern URL extraction using 4+ regex patterns**
+- [x] **Specialized `scrape_google_images()` function**
+- [x] **Smart fallback mechanisms for maximum image discovery**
+- [x] **Real-time progress tracking with success statistics**
+- [x] **Robust error handling with graceful failure recovery**
+- [x] **Automatic directory separation (web_images/ vs dataset/)**
+- [x] **Successfully downloaded 99 atmospheric images (foggy town + Chernobyl)**
 - [x] Skip reprocessing existing videos
 
 ### User Experience
@@ -29,13 +41,17 @@
 ## 🔄 TODO - Remaining Features
 
 ### Step 5: Gallery Scraping
-- [ ] **Web gallery image scraping**
-  - [ ] requests + BeautifulSoup integration
-  - [ ] CSS selector support for finding images
-  - [ ] Image download from gallery URLs
-  - [ ] Handle different image formats (jpg, png, webp)
-  - [ ] Progress tracking for gallery scraping
-  - [ ] Error handling for network requests
+- [x] **Web gallery image scraping**
+  - [x] requests + BeautifulSoup integration
+  - [x] CSS selector support for finding images
+  - [x] Image download from gallery URLs
+  - [x] Handle different image formats (jpg, png, webp, gif)
+  - [x] Progress tracking for gallery scraping
+  - [x] Error handling for network requests
+  - [x] Configurable number of images to download
+  - [x] Duplicate gallery check (existing images from same URL)
+  - [x] User confirmation for continuing downloads
+  - [x] Respectful scraping with delays
 
 ### Step 6: Metadata Management
 - [ ] **CSV metadata creation**

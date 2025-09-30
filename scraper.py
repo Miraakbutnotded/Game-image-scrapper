@@ -11,9 +11,18 @@ import yt_dlp
 import glob
 import cv2
 from tqdm import tqdm
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+import time
+import re
 
 # Define all possible output directories to check for processed videos
 OUTPUT_DIRECTORIES = ['dataset', 'real_images']
+
+# Define default directories for different content types
+DEFAULT_VIDEO_OUTPUT = 'dataset'
+DEFAULT_WEB_OUTPUT = 'web_images'
 
 def extract_frames_from_video(video_path, target_fps, output_dir):
     """Extract frames from a video at specified FPS and save to output directory.
@@ -325,6 +334,344 @@ def get_unprocessed_videos(video_list):
             unprocessed.append(video)
     return unprocessed
 
+def scrape_images_from_gallery(url, css_selector, max_images, output_dir):
+    """Scrape images from a web gallery using CSS selector.
+    
+    Args:
+        url (str): URL of the gallery webpage
+        css_selector (str): CSS selector to find image elements
+        max_images (int): Maximum number of images to download
+        output_dir (str): Directory to save downloaded images
+        
+    Returns:
+        list: Paths to downloaded image files
+    """
+    print(f"Scraping images from: {url}")
+    print(f"Using CSS selector: {css_selector}")
+    print(f"Max images to download: {max_images}")
+    
+    # Set up session with headers to avoid being blocked
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+    
+    # Special handling for Google Images
+    if 'google.com' in url and 'udm=2' in url:
+        return scrape_google_images(url, max_images, output_dir, session)
+    
+    try:
+        # Get the webpage
+        print("Fetching webpage...")
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Find image elements using CSS selector
+        print(f"Looking for images using selector: {css_selector}")
+        img_elements = soup.select(css_selector)
+        
+        if not img_elements:
+            print(f"⚠️ No images found with selector '{css_selector}'")
+            return []
+        
+        print(f"Found {len(img_elements)} image elements")
+        
+        # Extract image URLs
+        image_urls = []
+        for img in img_elements:
+            # Try different attributes where image URL might be stored
+            img_url = None
+            
+            # For Google Images, check data attributes first
+            if 'google.com' in url:
+                img_url = (img.get('data-src') or 
+                          img.get('data-iurl') or 
+                          img.get('data-original-src') or
+                          img.get('data-lzy_src') or
+                          img.get('src'))
+            else:
+                # For other sites, use standard approach
+                img_url = img.get('src') or img.get('data-src') or img.get('data-original')
+            
+            if img_url:
+                # Skip base64 data URLs (placeholder images)
+                if img_url.startswith('data:'):
+                    continue
+                    
+                # Convert relative URLs to absolute
+                full_url = urljoin(url, img_url)
+                image_urls.append(full_url)
+        
+        if not image_urls:
+            print("⚠️ No image URLs found in the selected elements")
+            return []
+        
+        # Limit to max_images
+        image_urls = image_urls[:max_images]
+        print(f"Will download {len(image_urls)} images")
+        
+        # Download images
+        downloaded_files = []
+        base_name = urlparse(url).netloc.replace('.', '_')
+        
+        with tqdm(total=len(image_urls), desc="Downloading images", unit="image") as pbar:
+            for i, img_url in enumerate(image_urls):
+                try:
+                    # Get image
+                    img_response = session.get(img_url, timeout=10)
+                    img_response.raise_for_status()
+                    
+                    # Determine file extension
+                    content_type = img_response.headers.get('content-type', '')
+                    if 'jpeg' in content_type or 'jpg' in content_type:
+                        ext = '.jpg'
+                    elif 'png' in content_type:
+                        ext = '.png'
+                    elif 'gif' in content_type:
+                        ext = '.gif'
+                    elif 'webp' in content_type:
+                        ext = '.webp'
+                    else:
+                        # Try to get extension from URL
+                        parsed_url = urlparse(img_url)
+                        url_ext = os.path.splitext(parsed_url.path)[1].lower()
+                        ext = url_ext if url_ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp'] else '.jpg'
+                    
+                    # Create filename
+                    filename = f"{base_name}_image_{i+1:04d}{ext}"
+                    filepath = os.path.join(output_dir, filename)
+                    
+                    # Save image
+                    with open(filepath, 'wb') as f:
+                        f.write(img_response.content)
+                    
+                    downloaded_files.append(filepath)
+                    
+                    # Small delay to be respectful to the server
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"\n⚠️ Failed to download image {i+1}: {e}")
+                
+                pbar.update(1)
+        
+        print(f"\n✓ Successfully downloaded {len(downloaded_files)} images")
+        return downloaded_files
+        
+    except requests.RequestException as e:
+        print(f"Error accessing webpage: {e}")
+        return []
+    except Exception as e:
+        print(f"Error scraping images: {e}")
+        return []
+
+def scrape_google_images(url, max_images, output_dir, session):
+    """Special handler for Google Images search results.
+    
+    Args:
+        url (str): Google Images search URL
+        max_images (int): Maximum number of images to download
+        output_dir (str): Directory to save downloaded images
+        session: requests session object
+        
+    Returns:
+        list: Paths to downloaded image files
+    """
+    print("🔍 Detected Google Images - using specialized scraping...")
+    
+    try:
+        # Get the webpage
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        
+        # Parse HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Google Images stores data in JavaScript - look for specific patterns
+        image_urls = []
+        
+        # Method 1: Look for img tags with specific Google attributes
+        img_elements = soup.find_all('img')
+        print(f"Found {len(img_elements)} total img elements")
+        
+        # Method 2: Enhanced JavaScript parsing for more image URLs
+        scripts = soup.find_all('script')
+        print("Parsing JavaScript data for image URLs...")
+        
+        for script in scripts:
+            if script.string:
+                script_content = script.string
+                # Look for various patterns in Google Images JavaScript
+                
+                # Pattern 1: Direct image URLs
+                url_patterns = re.findall(r'https?://[^"\s,\]]+\.(?:jpg|jpeg|png|gif|webp)(?:[^"\s,\]]*)?', script_content, re.IGNORECASE)
+                for found_url in url_patterns:
+                    # Clean up the URL (remove any trailing characters)
+                    clean_url = re.sub(r'["\s,\]]+$', '', found_url)
+                    if 'encrypted' not in clean_url and len(clean_url) > 20:
+                        image_urls.append(clean_url)
+                
+                # Pattern 2: Look for base64 encoded image data that might contain URLs
+                base64_patterns = re.findall(r'"(https?://[^"]+googleapis\.com/[^"]*)"', script_content)
+                for found_url in base64_patterns:
+                    if any(ext in found_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                        image_urls.append(found_url)
+                
+                # Pattern 3: Look for thumbnail and full-size image URLs
+                thumb_patterns = re.findall(r'"(https?://[^"]*googleusercontent\.com[^"]*)"', script_content)
+                for found_url in thumb_patterns:
+                    if len(found_url) > 30:  # Filter out very short URLs
+                        image_urls.append(found_url)
+                
+                # Pattern 4: Look for gstatic URLs
+                gstatic_patterns = re.findall(r'"(https?://[^"]*gstatic\.com[^"]*\.(?:jpg|jpeg|png|gif|webp)[^"]*)"', script_content, re.IGNORECASE)
+                for found_url in gstatic_patterns:
+                    image_urls.append(found_url)
+        
+        # Method 3: Look for data attributes in img tags
+        for img in img_elements:
+            # Check various Google-specific attributes
+            img_url = (img.get('data-src') or 
+                      img.get('data-iurl') or 
+                      img.get('data-original-src') or
+                      img.get('src'))
+            
+            if img_url and not img_url.startswith('data:'):
+                # Convert relative URLs to absolute
+                if img_url.startswith('/'):
+                    img_url = urljoin(url, img_url)
+                elif not img_url.startswith('http'):
+                    img_url = urljoin(url, img_url)
+                
+                # Filter for actual image URLs (not icons, logos, etc.)
+                if (any(ext in img_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']) or 
+                    'googleusercontent.com' in img_url or
+                    'gstatic.com' in img_url):
+                    # Skip very small images (likely icons)
+                    if not any(word in img_url.lower() for word in ['icon', 'logo', 'button', 'arrow']) and len(img_url) > 30:
+                        image_urls.append(img_url)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_urls = []
+        for url_item in image_urls:
+            if url_item not in seen and len(url_item) > 20:  # Filter out very short URLs
+                seen.add(url_item)
+                unique_urls.append(url_item)
+        
+        image_urls = unique_urls[:max_images]
+        
+        print(f"Found {len(image_urls)} suitable image URLs")
+        if image_urls:
+            print("Sample URLs:")
+            for i, sample_url in enumerate(image_urls[:5]):
+                print(f"  {i+1}: {sample_url[:80]}...")
+        
+        if not image_urls:
+            print("⚠️ No suitable image URLs found in Google Images")
+            print("💡 Google Images limits the number of images available without scrolling")
+            print("💡 Try using multiple searches with different terms or use other image sources")
+            return []
+        
+        # Download images
+        downloaded_files = []
+        base_name = "google_images"
+        failed_downloads = 0
+        
+        with tqdm(total=len(image_urls), desc="Downloading images", unit="image") as pbar:
+            for i, img_url in enumerate(image_urls):
+                try:
+                    # Get image with longer timeout for larger images
+                    img_response = session.get(img_url, timeout=30, stream=True)
+                    img_response.raise_for_status()
+                    
+                    # Check if it's actually an image
+                    content_type = img_response.headers.get('content-type', '')
+                    if not content_type.startswith('image/'):
+                        failed_downloads += 1
+                        if failed_downloads <= 3:  # Only show first few failures
+                            print(f"\n⚠️ Skipping non-image content: {content_type[:50]}")
+                        pbar.update(1)
+                        continue
+                    
+                    # Check file size (skip very small images - likely thumbnails or icons)
+                    content_length = img_response.headers.get('content-length')
+                    if content_length and int(content_length) < 1024:  # Skip images smaller than 1KB
+                        pbar.update(1)
+                        continue
+                    
+                    # Determine file extension
+                    if 'jpeg' in content_type or 'jpg' in content_type:
+                        ext = '.jpg'
+                    elif 'png' in content_type:
+                        ext = '.png'
+                    elif 'gif' in content_type:
+                        ext = '.gif'
+                    elif 'webp' in content_type:
+                        ext = '.webp'
+                    else:
+                        ext = '.jpg'  # Default
+                    
+                    # Create filename
+                    filename = f"{base_name}_foggy_town_{len(downloaded_files)+1:04d}{ext}"
+                    filepath = os.path.join(output_dir, filename)
+                    
+                    # Save image
+                    with open(filepath, 'wb') as f:
+                        for chunk in img_response.iter_content(chunk_size=8192):
+                            if chunk:  # Filter out keep-alive chunks
+                                f.write(chunk)
+                    
+                    downloaded_files.append(filepath)
+                    
+                    # Small delay to be respectful
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    failed_downloads += 1
+                    if failed_downloads <= 5:  # Only show first few failures
+                        print(f"\n⚠️ Failed to download image {i+1}: {str(e)[:100]}")
+                
+                pbar.update(1)
+        
+        if failed_downloads > 5:
+            print(f"\n⚠️ ... and {failed_downloads - 5} more failed downloads")
+        
+        print(f"\n✓ Successfully downloaded {len(downloaded_files)} images from Google Images")
+        if len(downloaded_files) < max_images:
+            print(f"💡 Note: Only {len(downloaded_files)} images were available. Google Images has limited results per page.")
+            print(f"💡 To get more images, try multiple searches with different related terms.")
+        
+        return downloaded_files
+        
+    except Exception as e:
+        print(f"Error scraping Google Images: {e}")
+        return []
+
+def check_existing_gallery_images(url, output_dir):
+    """Check if images from this gallery URL have already been downloaded.
+    
+    Args:
+        url (str): Gallery URL
+        output_dir (str): Directory to check for existing images
+        
+    Returns:
+        list: List of existing image files from this gallery
+    """
+    base_name = urlparse(url).netloc.replace('.', '_')
+    pattern = os.path.join(output_dir, f"{base_name}_image_*.jpg")
+    
+    # Check for various image extensions
+    existing_files = []
+    for ext in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+        pattern = os.path.join(output_dir, f"{base_name}_image_*.{ext}")
+        existing_files.extend(glob.glob(pattern))
+    
+    return existing_files
+
 def main():
     """Main function - handles command line arguments and coordinates scraping operations"""
     
@@ -335,9 +682,15 @@ def main():
     parser.add_argument('--mode', choices=["youtube", "gallery"],
                         required=True, help="Scraping mode: youtube videos or web gallery")
     
-    # Output directory (optional, defaults to 'dataset')
-    parser.add_argument("--outdir", default="dataset",
-                        help="Output directory for dataset")
+    # Output directory (optional, defaults based on mode)
+    parser.add_argument("--outdir", 
+                        help="Output directory for dataset (default: 'dataset' for videos, 'web_images' for galleries)")
+    
+    parser.add_argument("--video-outdir", default=DEFAULT_VIDEO_OUTPUT,
+                        help="Output directory for video frames (default: dataset)")
+    
+    parser.add_argument("--web-outdir", default=DEFAULT_WEB_OUTPUT,
+                        help="Output directory for web gallery images (default: web_images)")
     
     # YouTube-specific arguments
     parser.add_argument("--query", 
@@ -363,15 +716,30 @@ def main():
     parser.add_argument("--selector",
                         help="CSS selector for images in gallery (e.g., '.screenshot img')")
     
+    parser.add_argument("--num-images",
+                         type=int,
+                         default=50,
+                         help="Maximum number of images to download from gallery")
+    
     # Parse all command-line arguments
     args = parser.parse_args()
 
+    # Determine output directories based on mode and arguments
+    if args.mode == "youtube":
+        # For YouTube mode, use video output directory
+        output_dir = args.outdir if args.outdir else args.video_outdir
+    else:  # gallery mode
+        # For gallery mode, use web output directory
+        output_dir = args.outdir if args.outdir else args.web_outdir
+
     # Create necessary directories if they don't exist
-    os.makedirs(args.outdir, exist_ok=True)    # For final dataset images
-    os.makedirs("downloads", exist_ok=True)    # For downloaded videos
+    os.makedirs(output_dir, exist_ok=True)        # For dataset images (mode-specific)
+    os.makedirs("downloads", exist_ok=True)       # For downloaded videos
+    os.makedirs(args.video_outdir, exist_ok=True) # Ensure video dir exists
+    os.makedirs(args.web_outdir, exist_ok=True)   # Ensure web dir exists
 
     print(f"Starting scraper in {args.mode} mode...")
-    print(f"Output directory: {args.outdir}")
+    print(f"Output directory: {output_dir}")
 
     # Handle YouTube mode
     if args.mode == "youtube":
@@ -460,7 +828,7 @@ def main():
             # Progress bar for overall video processing
             for i, video_file in enumerate(videos_to_process, 1):
                 print(f"\n📹 [{i}/{len(videos_to_process)}] Processing: {os.path.basename(video_file)}")
-                frames = extract_frames_from_video(video_file, args.fps, args.outdir)
+                frames = extract_frames_from_video(video_file, args.fps, output_dir)
                 all_extracted_frames.extend(frames)
                 print(f"  ✓ Extracted {len(frames)} frames from this video")
             
@@ -473,9 +841,38 @@ def main():
         if not args.url or not args.selector:
             print("Error: --url and --selector are required for gallery mode")
             sys.exit(1)
+        
         print(f"Gallery mode - URL: {args.url}")
         print(f"CSS selector: {args.selector}")
-        # TODO: Implement gallery scraping
+        print(f"Max images: {args.num_images}")
+        
+        # Check for existing images from this gallery
+        existing_images = check_existing_gallery_images(args.url, output_dir)
+        
+        if existing_images:
+            print(f"⚠️ Found {len(existing_images)} existing images from this gallery:")
+            for img in existing_images[:5]:  # Show first 5
+                print(f"  - {os.path.basename(img)}")
+            if len(existing_images) > 5:
+                print(f"  ... and {len(existing_images) - 5} more")
+            
+            user_input = input("Continue downloading more images? (y/n): ").lower().strip()
+            if user_input not in ['y', 'yes']:
+                print("Skipping gallery scraping")
+                sys.exit(0)
+        
+        # Scrape images from gallery
+        downloaded_images = scrape_images_from_gallery(
+            args.url, 
+            args.selector, 
+            args.num_images, 
+            output_dir
+        )
+        
+        if downloaded_images:
+            print(f"\n🎉 Gallery scraping complete! Downloaded {len(downloaded_images)} images")
+        else:
+            print("No images were downloaded")
 
     print("Setup complete! Ready for implementation.")
 
